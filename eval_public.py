@@ -10,8 +10,9 @@ from sklearn.metrics import accuracy_score, classification_report, f1_score
 from relevance_model import (
     _ARTIFACT,
     default_public_json_path,
-    load_pipeline_and_threshold,
+    load_artifact,
     load_public_training_rows,
+    lr_and_st_for_pair_texts,
 )
 
 
@@ -22,8 +23,13 @@ def main() -> int:
         return 1
     doc = json.loads(path.read_text(encoding="utf-8"))
     X, y = load_public_training_rows(doc)
-    pipe, thr = load_pipeline_and_threshold(_ARTIFACT)
-    y_hat = [int(p >= thr) for p in pipe.predict_proba(X)[:, 1]]
+    pipe, thr, blend = load_artifact(_ARTIFACT)
+    p_lr, st = lr_and_st_for_pair_texts(X, pipe)
+    if float(blend) > 0.0:
+        proba = (1.0 - float(blend)) * p_lr + float(blend) * st
+    else:
+        proba = p_lr
+    y_hat = (proba >= thr).astype(int)
     print("accuracy", accuracy_score(y, y_hat))
     print("f1", f1_score(y, y_hat, zero_division=0))
     print(classification_report(y, y_hat, zero_division=0))

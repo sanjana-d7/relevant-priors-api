@@ -1,4 +1,4 @@
-"""Train TF-IDF + LR on relevant_priors_public.json and write artifacts/relevance_tfidf_lr.joblib"""
+"""Train TF-IDF + LR on relevant_priors_public.json; optional ST blend tuned on a holdout."""
 from __future__ import annotations
 
 import json
@@ -13,17 +13,17 @@ from relevance_model import (
     build_pipeline,
     default_public_json_path,
     load_public_training_rows,
+    lr_and_st_for_pair_texts,
     save_artifact,
 )
 
 
-def _best_threshold(
-    pipeline, X_va: list[str], y_va: list[int]
+def _best_threshold_vec(
+    proba: np.ndarray, y_va: list[int] | np.ndarray
 ) -> tuple[float, float]:
-    proba = pipeline.predict_proba(X_va)[:, 1]
     y_arr = np.asarray(y_va, dtype=int)
     best_t, best_acc = 0.5, 0.0
-    for t in np.arange(0.18, 0.83, 0.004):
+    for t in np.arange(0.15, 0.90, 0.003):
         pred = (proba >= t).astype(int)
         acc = accuracy_score(y_arr, pred)
         if acc > best_acc:
@@ -37,7 +37,6 @@ def _cv_score_for_c(
     y: list[int],
     skf: StratifiedKFold,
 ) -> tuple[float, list[float], list[float]]:
-    """Return mean val accuracy, per-fold accs, per-fold best thresholds."""
     y_arr = np.asarray(y, dtype=int)
     fold_acc: list[float] = []
     fold_thr: list[float] = []
@@ -51,10 +50,9 @@ def _cv_score_for_c(
         pipe = build_pipeline()
         pipe.set_params(clf__C=C)
         pipe.fit(X_tr, y_tr)
-        thr, _ = _best_threshold(pipe, X_va, y_va)
-        pred = (np.asarray(pipe.predict_proba(X_va)[:, 1], dtype=np.float64) >= thr).astype(
-            int
-        )
+        p_va = np.asarray(pipe.predict_proba(X_va)[:, 1], dtype=np.float64)
+        thr, _ = _best_threshold_vec(p_va, y_va)
+        pred = (p_va >= thr).astype(int)
         fold_acc.append(float(accuracy_score(y_va, pred)))
         fold_thr.append(thr)
     return float(np.mean(fold_acc)), fold_acc, fold_thr
@@ -76,7 +74,7 @@ def main() -> int:
     best_folds: list[float] = []
     best_thrs: list[float] = []
 
-    print("5-fold CV (per C: mean val acc, fold thrs):")
+    print("5-fold CV (LR only, per C):")
     for c in c_grid:
         mean_acc, f_acc, f_thr = _cv_score_for_c(c, X, y, skf)
         print(
@@ -87,32 +85,45 @@ def main() -> int:
         if mean_acc > best_mean:
             best_mean, best_c, best_folds, best_thrs = mean_acc, c, f_acc, f_thr
 
-    final_thr = float(np.median(best_thrs))
-    print(
-        f"\nBest C={best_c}  (5-fold mean acc={best_mean:.4f})  "
-        f"threshold=median of fold thrs={final_thr:.3f}"
-    )
+    print(f"\nBest C={best_c}  5-fold mean acc={best_mean:.4f}\n")
 
-    # One reporting holdout (same split as before) for human-readable F1
-    X_tr, X_va, y_tr, y_va = train_test_split(
+    # Holdout: tune (ST blend, threshold) vs LR-only
+    X_tr, X_val, y_tr, y_val = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     pipe = build_pipeline()
     pipe.set_params(clf__C=best_c)
     pipe.fit(X_tr, y_tr)
-    pred = (pipe.predict_proba(X_va)[:, 1] >= final_thr).astype(int)
-    acc = accuracy_score(y_va, pred)
-    f1 = f1_score(y_va, pred, zero_division=0)
-    print(f"Single 20% holdout @CV median thr: acc={acc:.4f}  F1={f1:.4f}")
-    print(classification_report(y_va, pred, zero_division=0))
+    p_lr, st = lr_and_st_for_pair_texts(X_val, pipe)
+    y_val_arr = np.asarray(y_val, dtype=int)
+
+    t_lr, acc_lr = _best_threshold_vec(p_lr, y_val)
+    print(f"LR only on val: acc={acc_lr:.4f}  thr={t_lr:.3f}")
+
+    best_h = (acc_lr, 0.0, t_lr)
+    for b in (0.05, 0.1, 0.12, 0.15, 0.18, 0.2, 0.22, 0.25, 0.28, 0.3, 0.35):
+        comb = (1.0 - b) * p_lr + b * st
+        for t in np.arange(0.12, 0.92, 0.002):
+            pred = (comb >= t).astype(int)
+            acc = accuracy_score(y_val_arr, pred)
+            if acc > best_h[0]:
+                best_h = (float(acc), float(b), float(t))
+    h_acc, best_b, best_t = best_h
+    print(
+        f"Best hybrid on val: acc={h_acc:.4f}  st_blend={best_b:.3f}  thr={best_t:.3f}"
+    )
+    if h_acc <= acc_lr:
+        print("Using LR-only (hybrid did not beat LR on this holdout).")
+        best_b, best_t = 0.0, t_lr
 
     pipe = build_pipeline()
     pipe.set_params(clf__C=best_c)
     pipe.fit(X, y)
     out = Path(__file__).resolve().parent / "artifacts" / "relevance_tfidf_lr.joblib"
-    save_artifact(pipe, final_thr, out)
+    save_artifact(pipe, best_t, out, st_blend=best_b)
     print(
-        f"Wrote {out} (full data, C={best_c}, thr={final_thr:.3f}, 5foldCV-selected, +shingle)"
+        f"Wrote {out}  C={best_c}  thr={best_t:.3f}  st_blend={best_b:.3f}  "
+        f"(+MiniLM on predict when st_blend>0)"
     )
     return 0
 

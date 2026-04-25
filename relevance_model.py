@@ -229,7 +229,11 @@ def load_public_training_rows(doc: dict[str, Any]) -> tuple[list[str], list[int]
 
 
 def save_artifact(
-    pipeline: Any, threshold: float, path: Path | None = None
+    pipeline: Any,
+    threshold: float,
+    path: Path | None = None,
+    *,
+    st_blend: float = 0.0,
 ) -> None:
     path = path or _ARTIFACT
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -237,6 +241,7 @@ def save_artifact(
         {
             "pipeline": pipeline,
             "threshold": float(threshold),
+            "st_blend": float(st_blend),
         },
         path,
     )
@@ -247,31 +252,108 @@ def save_pipeline(pipe: Pipeline, path: Path | None = None) -> None:
     save_artifact(pipe, 0.5, path=path)
 
 
-def load_pipeline(path: Path | None = None) -> Pipeline:
+def load_pipeline(path: Path | None = None) -> Any:
     path = path or _ARTIFACT
-    p, _ = load_pipeline_and_threshold(path)
+    p, _, _ = load_artifact(path)
     return p
 
 
-def load_pipeline_and_threshold(
+def load_artifact(
     path: Path | None = None,
-) -> tuple[Any, float]:
+) -> tuple[Any, float, float]:
     path = path or _ARTIFACT
     obj: Any = joblib.load(path)
     if isinstance(obj, dict) and "pipeline" in obj:
         p = obj["pipeline"]
-        return p, float(obj.get("threshold", 0.5))
+        return p, float(obj.get("threshold", 0.5)), float(
+            obj.get("st_blend", 0.0) or 0.0
+        )
     if hasattr(obj, "predict_proba"):
-        return obj, 0.5
+        return obj, 0.5, 0.0
     raise TypeError(f"Unrecognized artifact at {path}")
 
 
+def load_pipeline_and_threshold(
+    path: Path | None = None,
+) -> tuple[Any, float, float]:
+    return load_artifact(path)
+
+
+def _st_model():
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+
+_ST_MODEL: Any = None
+
+
+def get_st_model() -> Any:
+    global _ST_MODEL
+    if _ST_MODEL is None:
+        _ST_MODEL = _st_model()
+    return _ST_MODEL
+
+
+def lr_and_st_for_pair_texts(
+    X: list[str], pipe: Any
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vector of LR proba and ST [0,1] alignment for each pair string; ST grouped by current."""
+    p_lr = np.asarray(pipe.predict_proba(X)[:, 1], dtype=np.float64)
+    n = len(X)
+    st_out = np.zeros(n, dtype=np.float64)
+    by_cur: dict[str, list[tuple[int, str]]] = {}
+    for i, t in enumerate(X):
+        cur, pri = _parse_pair_line(t)
+        by_cur.setdefault(cur, []).append((i, pri))
+    for cur, items in by_cur.items():
+        idxs: list[int] = []
+        pris: list[str] = []
+        for i, p in items:
+            idxs.append(i)
+            pris.append(p)
+        s = st_alignment_scores(cur, pris)
+        for j, ii in enumerate(idxs):
+            st_out[int(ii)] = s[j]
+    return p_lr, st_out
+
+
+def st_alignment_scores(
+    current: str, priors: list[str]
+) -> np.ndarray:
+    """Cosine-based alignment in [0, 1] from a small sentence encoder."""
+    if not priors:
+        return np.zeros((0,), dtype=np.float64)
+    m = get_st_model()
+    c_emb = m.encode(
+        [current], normalize_embeddings=True, show_progress_bar=False
+    )
+    p_emb = m.encode(
+        priors, normalize_embeddings=True, show_progress_bar=False, batch_size=64
+    )
+    # cosine similarity in [-1,1] for L2-normalized rows
+    cos = (c_emb @ p_emb.T).ravel()
+    return ((cos.astype(np.float64) + 1.0) / 2.0).clip(0.0, 1.0)
+
+
 def predict_batch(
-    pipe: Any, current: str, priors: list[str], *, threshold: float = 0.5
+    pipe: Any,
+    current: str,
+    priors: list[str],
+    *,
+    threshold: float = 0.5,
+    st_blend: float = 0.0,
 ) -> list[bool]:
     if not priors:
         return []
     texts = [_pair_texts(current, p) for p in priors]
-    proba = pipe.predict_proba(texts)[:, 1]
+    p_lr = np.asarray(pipe.predict_proba(texts)[:, 1], dtype=np.float64)
+    b = float(st_blend)
+    if b <= 0.0:
+        proba = p_lr
+    else:
+        b = min(b, 1.0)
+        st = st_alignment_scores(current, priors)
+        proba = (1.0 - b) * p_lr + b * st
     t = float(threshold)
     return [bool(p >= t) for p in proba]

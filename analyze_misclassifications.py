@@ -7,9 +7,10 @@ from pathlib import Path
 
 from relevance_model import (
     _ARTIFACT,
-    default_public_json_path,
-    load_pipeline_and_threshold,
     _pair_texts,
+    default_public_json_path,
+    load_artifact,
+    lr_and_st_for_pair_texts,
 )
 
 
@@ -25,7 +26,7 @@ def main() -> int:
         for r in doc["truth"]
     }
     case_by_id = {c["case_id"]: c for c in doc["cases"]}
-    pipe, thr = load_pipeline_and_threshold(_ARTIFACT)
+    pipe, thr, blend = load_artifact(_ARTIFACT)
 
     rows: list[tuple[str, str, str, str, bool]] = []
     for (case_id, study_id), lab in truth.items():
@@ -42,7 +43,11 @@ def main() -> int:
         rows.append((case_id, study_id, cur, prior, lab))
 
     Xs = [_pair_texts(c, p) for _, _, c, p, _ in rows]
-    proba = pipe.predict_proba(Xs)[:, 1]
+    p_lr, st = lr_and_st_for_pair_texts(Xs, pipe)
+    if float(blend) > 0.0:
+        proba = (1.0 - float(blend)) * p_lr + float(blend) * st
+    else:
+        proba = p_lr
 
     wrong: list[tuple[str, str, str, str, bool, bool, float]] = []
     for i, (case_id, study_id, cur, prior, lab) in enumerate(rows):

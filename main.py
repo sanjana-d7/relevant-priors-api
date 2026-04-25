@@ -10,7 +10,7 @@ import time
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
-from relevance_model import _ARTIFACT, load_pipeline_and_threshold, predict_batch
+from relevance_model import _ARTIFACT, load_artifact, predict_batch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("relevant_priors")
@@ -18,10 +18,11 @@ logger = logging.getLogger("relevant_priors")
 _CACHE: dict[tuple[str, str, str], bool] = {}
 _PIPE = None
 _THRESH: float = 0.5
+_BLEND: float = 0.0
 
 
 def get_pipeline_and_threshold():
-    global _PIPE, _THRESH
+    global _PIPE, _THRESH, _BLEND
     if _PIPE is None:
         p = _ARTIFACT
         if not p.is_file():
@@ -29,9 +30,14 @@ def get_pipeline_and_threshold():
                 f"Model not found at {p}. Run: python train.py  "
                 "(or: python train.py path/to/relevant_priors_public.json)"
             )
-        _PIPE, _THRESH = load_pipeline_and_threshold(p)
-        logger.info("Loaded model from %s threshold=%.3f", p, _THRESH)
-    return _PIPE, _THRESH
+        _PIPE, _THRESH, _BLEND = load_artifact(p)
+        logger.info(
+            "Loaded model from %s threshold=%.3f st_blend=%.3f",
+            p,
+            _THRESH,
+            _BLEND,
+        )
+    return _PIPE, _THRESH, _BLEND
 
 
 class Study(BaseModel):
@@ -82,14 +88,17 @@ def _artifact_fingerprint() -> dict[str, str | int]:
 
 @app.get("/health")
 def health() -> dict[str, str | int]:
-    out: dict[str, str | int] = {"status": "ok", "model": "v4-5fold-cv-shingle-1to4gram"}
+    out: dict[str, str | int] = {
+        "status": "ok",
+        "model": "v5-5fold-lr-minilm-blend",
+    }
     out.update(_artifact_fingerprint())
     return out
 
 
 def _run_predict(body: PredictRequest, req_id: str) -> PredictResponse:
     t0 = time.perf_counter()
-    pipe, thr = get_pipeline_and_threshold()
+    pipe, thr, blend = get_pipeline_and_threshold()
     n_cases = len(body.cases)
     n_priors = sum(len(c.prior_studies) for c in body.cases)
     logger.info("request_id=%s cases=%d priors=%d", req_id, n_cases, n_priors)
@@ -114,7 +123,9 @@ def _run_predict(body: PredictRequest, req_id: str) -> PredictResponse:
                 uncached_prior.append(pd)
 
         if uncached_prior:
-            batch = predict_batch(pipe, cur, uncached_prior, threshold=thr)
+            batch = predict_batch(
+                pipe, cur, uncached_prior, threshold=thr, st_blend=blend
+            )
             for idx, b in zip(uncached_i, batch, strict=True):
                 out_flags[idx] = b
                 pid = pids[idx]
