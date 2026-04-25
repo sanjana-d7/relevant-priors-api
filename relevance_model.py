@@ -45,45 +45,6 @@ def _parse_pair_line(t: str) -> tuple[str, str]:
     return cur, pri
 
 
-# Common radiology tokens for soft modality / region agreement
-_MOD_KEYS = (
-    "BREAST", "MAM", "TOMO", "CHEST", "HEART", "LUNG", " CT", "CT ",
-    "MR ", " MRI", "ULTRASOUND", " US ", " US,", "BONE", "SPINE", "CERVICAL",
-    "THORACIC", "LUMBAR", "SKULL", "BRAIN", "HEAD", "ABDOMEN", "PELVIS",
-    "KIDNEY", "LIVER", "EXTREMITY", "VASCULAR", "ANGIO", "NUCLEAR", "PET ",
-)
-
-
-def _modality_features(pairs: list[str]) -> np.ndarray:
-    out = np.zeros((len(pairs), 4), dtype=np.float64)
-    for i, t in enumerate(pairs):
-        cur, pri = _parse_pair_line(t)
-        if not cur and not pri:
-            continue
-        c2, p2 = f" {cur} ", f" {pri} "
-        kc = sum(1 for k in _MOD_KEYS if k in c2)
-        kp = sum(1 for k in _MOD_KEYS if k in p2)
-        km = sum(1 for k in _MOD_KEYS if (k in c2 and k in p2))
-        out[i, 0] = min(km / 3.0, 1.0)
-        out[i, 1] = min((kc + kp) / 6.0, 1.0)
-        if kc and kp:
-            out[i, 2] = km / max(1, min(kc, kp))
-        if kc and kp and km == 0:
-            out[i, 3] = 1.0
-    return out
-
-
-def _modality_transformer(X) -> np.ndarray:  # noqa: ANN001
-    arr = np.asarray(X)
-    if arr.size == 0:
-        return np.zeros((0, 4), dtype=np.float64)
-    if arr.ndim == 0:
-        seq = [str(arr.item())]
-    else:
-        seq = [str(s) for s in arr.ravel().tolist()]
-    return _modality_features(seq)
-
-
 def _jaccard_features(pairs: list[str]) -> np.ndarray:
     out = np.zeros((len(pairs), 1), dtype=np.float64)
     for i, t in enumerate(pairs):
@@ -187,19 +148,6 @@ def build_pipeline() -> Pipeline:
                             "ft2",
                             FunctionTransformer(
                                 _token_overlap_transformer, validate=False
-                            ),
-                        )
-                    ]
-                ),
-            ),
-            (
-                "mod",
-                Pipeline(
-                    [
-                        (
-                            "m",
-                            FunctionTransformer(
-                                _modality_transformer, validate=False
                             ),
                         )
                     ]
