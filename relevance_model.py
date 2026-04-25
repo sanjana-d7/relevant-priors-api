@@ -10,7 +10,6 @@ from typing import Any
 
 import joblib
 import numpy as np
-from sklearn.ensemble import VotingClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import FeatureUnion, Pipeline
@@ -217,92 +216,6 @@ def build_pipeline() -> Pipeline:
         random_state=42,
     )
     return Pipeline([("feats", union), ("clf", clf)])
-
-
-def _build_pipeline_b(c: float) -> Pipeline:
-    """Second opinion: more word/char n-gram diversity, same dense hooks."""
-    word_tfidf = TfidfVectorizer(
-        ngram_range=(1, 2),
-        min_df=1,
-        max_df=0.92,
-        sublinear_tf=True,
-        max_features=70_000,
-    )
-    subword = TfidfVectorizer(
-        analyzer="char_wb",
-        ngram_range=(4, 6),
-        min_df=1,
-        max_df=0.98,
-        sublinear_tf=True,
-        max_features=14_000,
-    )
-    union = FeatureUnion(
-        [
-            ("w_tfidf", word_tfidf),
-            ("c_tfidf", subword),
-            (
-                "jacc",
-                Pipeline(
-                    [
-                        (
-                            "ft",
-                            FunctionTransformer(
-                                _jaccard_transformer, validate=False
-                            ),
-                        )
-                    ]
-                ),
-            ),
-            (
-                "ovlp",
-                Pipeline(
-                    [
-                        (
-                            "ft2",
-                            FunctionTransformer(
-                                _token_overlap_transformer, validate=False
-                            ),
-                        )
-                    ]
-                ),
-            ),
-            (
-                "mod",
-                Pipeline(
-                    [
-                        (
-                            "m",
-                            FunctionTransformer(
-                                _modality_transformer, validate=False
-                            ),
-                        )
-                    ]
-                ),
-            ),
-        ]
-    )
-    clf = LogisticRegression(
-        class_weight="balanced",
-        C=c,
-        max_iter=3000,
-        solver="saga",
-        n_jobs=None,
-        random_state=11,
-    )
-    return Pipeline([("feats", union), ("clf", clf)])
-
-
-def build_ensemble(c1: float, c2: float) -> VotingClassifier:
-    """Soft average of two diverse LR pipelines; helps near-margin pairs."""
-    p1 = build_pipeline()
-    p1.set_params(clf__C=c1)
-    p2 = _build_pipeline_b(c2)
-    return VotingClassifier(
-        estimators=[("a", p1), ("b", p2)],
-        voting="soft",
-        weights=[1.0, 1.0],
-        n_jobs=None,
-    )
 
 
 def load_public_training_rows(doc: dict[str, Any]) -> tuple[list[str], list[int]]:
