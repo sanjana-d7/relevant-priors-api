@@ -30,6 +30,12 @@
 - **Public in-sample accuracy ≠ smoke (10-case) accuracy ≠ private split accuracy.** A change that helps the public file can hurt the small smoke set, especially anything that shifts borderline decisions (ensemble, calibration shifts, threshold edits).
 - **Keep a verifiable identity** for the deployed artifact (`/health` exposes `model` tag + bytes + sha20 prefix). This caught one case where the same score appeared after a “redeploy” because the new model wasn’t actually live yet.
 
+## Memory on small hosts (e.g. Render 512MB)
+
+- **Do not** install `torch` / `sentence-transformers` in production; use `requirements.txt` and train with `python train.py --lr-only` so `st_blend=0`.
+- **Smaller TF‑IDF** caps in `build_pipeline` (45k + 12k max features) and `LogisticRegression(n_jobs=1)` reduce peak RAM; **one Uvicorn worker** (`--workers 1` in `run_server.ps1` / `render_start.sh`) avoids loading the model N times.
+- In the Render **Start command**, if you do not use our script, set `--workers 1` explicitly.
+
 ## How I would improve it next
 
 - **Cross-encoder** (e.g. a small BERT trained on the public pairs) instead of plain MiniLM cosine; expected to help short, ambiguous radiology descriptions.

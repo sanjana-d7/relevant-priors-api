@@ -138,12 +138,13 @@ def _shingle_jaccard_transformer(X) -> np.ndarray:  # noqa: ANN001
 
 
 def build_pipeline() -> Pipeline:
+    # Smaller vocabs to fit ~512MB hosts (inference: sparse mat + coef + python overhead).
     word_tfidf = TfidfVectorizer(
-        ngram_range=(1, 4),
+        ngram_range=(1, 3),
         min_df=1,
         max_df=0.9,
         sublinear_tf=True,
-        max_features=85_000,
+        max_features=45_000,
     )
     subword = TfidfVectorizer(
         analyzer="char_wb",
@@ -151,7 +152,7 @@ def build_pipeline() -> Pipeline:
         min_df=1,
         max_df=0.95,
         sublinear_tf=True,
-        max_features=20_000,
+        max_features=12_000,
     )
     union = FeatureUnion(
         [
@@ -203,7 +204,7 @@ def build_pipeline() -> Pipeline:
         C=0.5,
         max_iter=3000,
         solver="saga",
-        n_jobs=None,
+        n_jobs=1,
         random_state=42,
     )
     return Pipeline([("feats", union), ("clf", clf)])
