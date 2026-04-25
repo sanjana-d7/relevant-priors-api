@@ -3,6 +3,7 @@ POST /predict — relevant priors API (relevant-priors-v1).
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 
@@ -66,10 +67,24 @@ class PredictResponse(BaseModel):
 
 app = FastAPI(title="Relevant priors v1", version="1.0.0")
 
+def _artifact_fingerprint() -> dict[str, str | int]:
+    """Stable id for the on-disk .joblib so you can confirm Render = your latest train."""
+    p = _ARTIFACT
+    if not p.is_file():
+        return {"artifact": "missing"}
+    b = p.read_bytes()
+    h = hashlib.sha256(b).hexdigest()[:20]
+    return {
+        "artifact_bytes": len(b),
+        "artifact_sha20": h,
+    }
+
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, str | int]:
+    out: dict[str, str | int] = {"status": "ok", "model": "v2-ensemble-tfidf"}
+    out.update(_artifact_fingerprint())
+    return out
 
 
 def _run_predict(body: PredictRequest, req_id: str) -> PredictResponse:
