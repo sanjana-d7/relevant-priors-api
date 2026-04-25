@@ -9,17 +9,18 @@ import time
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
-from relevance_model import _ARTIFACT, load_pipeline, predict_batch
+from relevance_model import _ARTIFACT, load_pipeline_and_threshold, predict_batch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("relevant_priors")
 
 _CACHE: dict[tuple[str, str, str], bool] = {}
 _PIPE = None
+_THRESH: float = 0.5
 
 
-def get_pipe():
-    global _PIPE
+def get_pipeline_and_threshold():
+    global _PIPE, _THRESH
     if _PIPE is None:
         p = _ARTIFACT
         if not p.is_file():
@@ -27,9 +28,9 @@ def get_pipe():
                 f"Model not found at {p}. Run: python train.py  "
                 "(or: python train.py path/to/relevant_priors_public.json)"
             )
-        _PIPE = load_pipeline(p)
-        logger.info("Loaded model from %s", p)
-    return _PIPE
+        _PIPE, _THRESH = load_pipeline_and_threshold(p)
+        logger.info("Loaded model from %s threshold=%.3f", p, _THRESH)
+    return _PIPE, _THRESH
 
 
 class Study(BaseModel):
@@ -73,7 +74,7 @@ def health() -> dict[str, str]:
 
 def _run_predict(body: PredictRequest, req_id: str) -> PredictResponse:
     t0 = time.perf_counter()
-    pipe = get_pipe()
+    pipe, thr = get_pipeline_and_threshold()
     n_cases = len(body.cases)
     n_priors = sum(len(c.prior_studies) for c in body.cases)
     logger.info("request_id=%s cases=%d priors=%d", req_id, n_cases, n_priors)
@@ -98,7 +99,7 @@ def _run_predict(body: PredictRequest, req_id: str) -> PredictResponse:
                 uncached_prior.append(pd)
 
         if uncached_prior:
-            batch = predict_batch(pipe, cur, uncached_prior)
+            batch = predict_batch(pipe, cur, uncached_prior, threshold=thr)
             for idx, b in zip(uncached_i, batch, strict=True):
                 out_flags[idx] = b
                 pid = pids[idx]
