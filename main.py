@@ -82,7 +82,7 @@ def _artifact_fingerprint() -> dict[str, str | int]:
 
 @app.get("/health")
 def health() -> dict[str, str | int]:
-    out: dict[str, str | int] = {"status": "ok", "model": "v1-smoke-96-recipe"}
+    out: dict[str, str | int] = {"status": "ok", "model": "v4-5fold-cv-shingle-1to4gram"}
     out.update(_artifact_fingerprint())
     return out
 

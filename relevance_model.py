@@ -107,13 +107,43 @@ def _token_overlap_transformer(X) -> np.ndarray:  # noqa: ANN001
     return _token_overlap_features(seq)
 
 
+def _char_shingle_jaccard(pairs: list[str], *, k: int = 2) -> np.ndarray:
+    """Jaccard on k-character shingles (ignoring pair template); good for short rads text."""
+
+    def shingles(s: str) -> set[str]:
+        s = s.replace(" ", "")
+        if len(s) < k:
+            return {s} if s else set()
+        return {s[i : i + k] for i in range(len(s) - k + 1)}
+
+    out = np.zeros((len(pairs), 1), dtype=np.float64)
+    for i, t in enumerate(pairs):
+        cur, pri = _parse_pair_line(t)
+        a, b = shingles(cur), shingles(pri)
+        if not a and not b:
+            continue
+        out[i, 0] = len(a & b) / max(1, len(a | b))
+    return out
+
+
+def _shingle_jaccard_transformer(X) -> np.ndarray:  # noqa: ANN001
+    arr = np.asarray(X)
+    if arr.size == 0:
+        return np.zeros((0, 1), dtype=np.float64)
+    if arr.ndim == 0:
+        seq = [str(arr.item())]
+    else:
+        seq = [str(s) for s in arr.ravel().tolist()]
+    return _char_shingle_jaccard(seq, k=2)
+
+
 def build_pipeline() -> Pipeline:
     word_tfidf = TfidfVectorizer(
-        ngram_range=(1, 3),
+        ngram_range=(1, 4),
         min_df=1,
         max_df=0.9,
         sublinear_tf=True,
-        max_features=80_000,
+        max_features=85_000,
     )
     subword = TfidfVectorizer(
         analyzer="char_wb",
@@ -148,6 +178,19 @@ def build_pipeline() -> Pipeline:
                             "ft2",
                             FunctionTransformer(
                                 _token_overlap_transformer, validate=False
+                            ),
+                        )
+                    ]
+                ),
+            ),
+            (
+                "shg",
+                Pipeline(
+                    [
+                        (
+                            "s",
+                            FunctionTransformer(
+                                _shingle_jaccard_transformer, validate=False
                             ),
                         )
                     ]
