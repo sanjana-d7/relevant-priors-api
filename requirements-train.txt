@@ -1,0 +1,4 @@
+# Local training: adds MiniLM optional hybrid. Not needed on the server.
+-r requirements.txt
+torch>=2.0.0
+sentence-transformers>=2.6.0

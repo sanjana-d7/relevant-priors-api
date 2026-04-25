@@ -353,7 +353,11 @@ def predict_batch(
         proba = p_lr
     else:
         b = min(b, 1.0)
-        st = st_alignment_scores(current, priors)
-        proba = (1.0 - b) * p_lr + b * st
+        try:
+            st = st_alignment_scores(current, priors)
+        except Exception:  # noqa: BLE001
+            proba = p_lr
+        else:
+            proba = (1.0 - b) * p_lr + b * st
     t = float(threshold)
     return [bool(p >= t) for p in proba]

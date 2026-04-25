@@ -13,7 +13,6 @@ from relevance_model import (
     build_pipeline,
     default_public_json_path,
     load_public_training_rows,
-    lr_and_st_for_pair_texts,
     save_artifact,
 )
 
@@ -59,7 +58,10 @@ def _cv_score_for_c(
 
 
 def main() -> int:
-    data_path = Path(sys.argv[1]) if len(sys.argv) > 1 else default_public_json_path()
+    argv = [a for a in sys.argv[1:]]
+    lr_only = "--lr-only" in argv
+    argv = [a for a in argv if a != "--lr-only"]
+    data_path = Path(argv[0]) if argv else default_public_json_path()
     if not data_path.is_file():
         print(f"Missing {data_path}. Place relevant_priors_public.json next to train.py or pass path.", file=sys.stderr)
         return 1
@@ -87,34 +89,49 @@ def main() -> int:
 
     print(f"\nBest C={best_c}  5-fold mean acc={best_mean:.4f}\n")
 
-    # Holdout: tune (ST blend, threshold) vs LR-only
+    # Holdout: tune threshold; optional MiniLM blend (install requirements-train.txt)
     X_tr, X_val, y_tr, y_val = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     pipe = build_pipeline()
     pipe.set_params(clf__C=best_c)
     pipe.fit(X_tr, y_tr)
-    p_lr, st = lr_and_st_for_pair_texts(X_val, pipe)
+    p_lr = np.asarray(pipe.predict_proba(X_val)[:, 1], dtype=np.float64)
     y_val_arr = np.asarray(y_val, dtype=int)
 
     t_lr, acc_lr = _best_threshold_vec(p_lr, y_val)
     print(f"LR only on val: acc={acc_lr:.4f}  thr={t_lr:.3f}")
 
-    best_h = (acc_lr, 0.0, t_lr)
-    for b in (0.05, 0.1, 0.12, 0.15, 0.18, 0.2, 0.22, 0.25, 0.28, 0.3, 0.35):
-        comb = (1.0 - b) * p_lr + b * st
-        for t in np.arange(0.12, 0.92, 0.002):
-            pred = (comb >= t).astype(int)
-            acc = accuracy_score(y_val_arr, pred)
-            if acc > best_h[0]:
-                best_h = (float(acc), float(b), float(t))
-    h_acc, best_b, best_t = best_h
-    print(
-        f"Best hybrid on val: acc={h_acc:.4f}  st_blend={best_b:.3f}  thr={best_t:.3f}"
-    )
-    if h_acc <= acc_lr:
-        print("Using LR-only (hybrid did not beat LR on this holdout).")
-        best_b, best_t = 0.0, t_lr
+    best_b, best_t = 0.0, t_lr
+    if lr_only:
+        print("(--lr-only) Skipping sentence-transformer hybrid; st_blend=0 for deploy size.")
+    else:
+        try:
+            from relevance_model import lr_and_st_for_pair_texts
+        except ImportError:
+            print(
+                "MiniLM not available (install: pip install -r requirements-train.txt). "
+                "Using LR-only.",
+                file=sys.stderr,
+            )
+            best_b, best_t = 0.0, t_lr
+        else:
+            _, st = lr_and_st_for_pair_texts(X_val, pipe)
+            best_h = (acc_lr, 0.0, t_lr)
+            for b in (0.05, 0.1, 0.12, 0.15, 0.18, 0.2, 0.22, 0.25, 0.28, 0.3, 0.35):
+                comb = (1.0 - b) * p_lr + b * st
+                for t in np.arange(0.12, 0.92, 0.002):
+                    pred = (comb >= t).astype(int)
+                    acc = accuracy_score(y_val_arr, pred)
+                    if acc > best_h[0]:
+                        best_h = (float(acc), float(b), float(t))
+            h_acc, best_b, best_t = best_h
+            print(
+                f"Best hybrid on val: acc={h_acc:.4f}  st_blend={best_b:.3f}  thr={best_t:.3f}"
+            )
+            if h_acc <= acc_lr:
+                print("Using LR-only (hybrid did not beat LR on this holdout).")
+                best_b, best_t = 0.0, t_lr
 
     pipe = build_pipeline()
     pipe.set_params(clf__C=best_c)
